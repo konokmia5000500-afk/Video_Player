@@ -23,7 +23,7 @@ header h1{font-size:19px;margin:0 0 0 6px;flex:1;font-weight:600;overflow:hidden
 .th i{position:absolute;left:0;bottom:0;height:3px;background:#2d8cff}
 .nm{flex:1;min-width:0}.nm b{display:block;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nm small{color:#8b919c}
 .empty{padding:70px 30px;text-align:center;color:#8b919c;line-height:1.7}
-#bn{display:none;margin:10px 14px;padding:12px;border-radius:8px;background:#1f3b63;text-align:center}
+#sc{display:none;padding:9px 14px;background:#1f3b63;font-size:13px;text-align:center}
 .sw{width:42px;height:24px;border-radius:12px;background:#454a55;position:relative;flex:none;transition:background .15s}
 .sw:after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .15s}
 .sw.on{background:#2d8cff}.sw.on:after{transform:translateX(18px)}
@@ -62,8 +62,8 @@ input[type=range]{flex:1;accent-color:#2d8cff;height:28px;margin:0;min-width:0}
 </style></head><body>
 
 <div id="lib" class="scr">
- <header><button class="ib" id="bk" style="display:none">&#8592;</button><h1 id="ttl">Video Player</h1><button class="ib" id="ad">&#65291;</button><button class="ib" id="st">&#9881;</button></header>
- <div id="bn">Tap to load your saved folders</div>
+ <header><button class="ib" id="bk" style="display:none">&#8592;</button><h1 id="ttl">Video Player</h1><button class="ib" id="rs">&#8635;</button><button class="ib" id="ad">&#65291;</button><button class="ib" id="st">&#9881;</button></header>
+ <div id="sc"></div>
  <div class="list" id="list"></div>
 </div>
 
@@ -98,7 +98,7 @@ const pad=n=>String(n).padStart(2,'0');
 const fmt=t=>{if(!isFinite(t)||t<0)t=0;t=Math.floor(t);const h=t/3600|0,m=(t%3600)/60|0,s=t%60;return(h?h+':'+pad(m):m)+':'+pad(s)};
 const sz=b=>b>1e9?(b/1e9).toFixed(2)+' GB':(b/1e6).toFixed(1)+' MB';
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
-const nat=(a,b)=>a.localeCompare(b,undefined,{numeric:true});
+const nat=new Intl.Collator(undefined,{numeric:true}).compare;
 let tmT,hdT;
 function toast(m){const e=$('toast');e.textContent=m;e.style.display='block';clearTimeout(tmT);tmT=setTimeout(()=>e.style.display='none',1800)}
 function hud(m){const e=$('hud');e.textContent=m;e.style.display='block';clearTimeout(hdT);hdT=setTimeout(()=>e.style.display='none',700)}
@@ -125,35 +125,61 @@ function sheet(title,build){const o=document.createElement('div');o.className='o
 function opts(title,arr,cur,cb,f=v=>v){sheet(title,(c,close)=>arr.forEach(v=>{const b=document.createElement('button');b.className='op'+(v==cur?' sel':'');b.textContent=f(v);b.onclick=()=>{close();cb(v)};c.appendChild(b)}))}
 
 /* library */
-const folders={};let view=null,saved=[];
+const folders={};let view=null,saved=[],scanning=false,cnt=0,opening=0;
 const VX=/\.(mp4|mkv|webm|avi|mov|3gp|m4v|flv|ts|wmv|mpg|mpeg|ogv)$/i;
-function addFile(f,dir){if(!(f.type.startsWith('video')||VX.test(f.name)))return;const a=folders[dir]||(folders[dir]=[]);
- if(!a.some(x=>x.name==f.name&&x.size==f.size))a.push({file:f,name:f.name,size:f.size,key:f.name+'|'+f.size})}
-async function walk(h,dir){for await(const[n,e]of h.entries()){if(e.kind=='file'){if(VX.test(n))addFile(await e.getFile(),dir)}else if(n[0]!='.')await walk(e,n)}}
-const idb=(m,v)=>new Promise(r=>{const q=indexedDB.open('vp',1);q.onupgradeneeded=()=>q.result.createObjectStore('h');q.onerror=()=>r();
- q.onsuccess=()=>{const s=q.result.transaction('h',m=='get'?'readonly':'readwrite').objectStore('h');const x=m=='get'?s.get('d'):s.put(v,'d');x.onsuccess=()=>r(x.result);x.onerror=()=>r()}});
-async function scan(hs){for(const h of hs)await walk(h,h.name);$('bn').style.display='none';render()}
+const uid=()=>Math.random().toString(36).slice(2);
+const last=n=>n.split('/').pop();
+const sS=new Set();
+function addFile(f,dir){if(!(f.type.startsWith('video')||VX.test(f.name)))return;const k=dir+'/'+f.name+'|'+f.size;if(sS.has(k))return;sS.add(k);
+ (folders[dir]||(folders[dir]=[])).push({file:f,name:f.name,size:f.size,key:dir+'/'+f.name})}
+const idb=(m,k,v)=>new Promise(r=>{const q=indexedDB.open('vp',1);q.onupgradeneeded=()=>q.result.createObjectStore('h');q.onerror=()=>r();
+ q.onsuccess=()=>{try{const s=q.result.transaction('h',m=='get'?'readonly':'readwrite').objectStore('h');const x=m=='get'?s.get(k):s.put(v,k);x.onsuccess=()=>r(x.result);x.onerror=()=>r()}catch(e){r()}}});
+const cacheable=()=>{const o={};for(const k in folders){const a=folders[k].filter(x=>x.h);if(a.length)o[k]=a.map(x=>({name:x.name,h:x.h,r:x.r,size:x.size,key:x.key}))}return o};
+async function getF(it){if(it.file)return it.file;try{if(await it.h.queryPermission({mode:'read'})!='granted'&&await it.h.requestPermission({mode:'read'})!='granted')return null;return await it.h.getFile()}catch(e){return null}}
+async function walk(h,path,rid,nf){for await(const[n,e]of h.entries()){
+ if(e.kind=='file'){if(VX.test(n)){(nf[path]||(nf[path]=[])).push({name:n,h:e,r:rid,size:null,key:path+'/'+n});if(++cnt%100==0)$('sc').textContent='Scanning... '+cnt+' videos'}}
+ else if(n[0]!='.'&&n!='Android')await walk(e,path+'/'+n,rid,nf)}}
+async function scanAll(ask,list){list=list||saved;if(scanning)return;if(!list.length){toast('Add a folder first');return}
+ scanning=true;cnt=0;const sc=$('sc');sc.style.display='block';sc.textContent='Scanning...';let denied=0;
+ for(const r of list){try{let p=await r.h.queryPermission({mode:'read'});if(p!='granted'&&ask)p=await r.h.requestPermission({mode:'read'});
+  if(p!='granted'){denied++;continue}
+  const nf={},old=new Map();await walk(r.h,r.h.name,r.id,nf);
+  for(const k of Object.keys(folders)){folders[k].forEach(x=>{if(x.r===r.id&&x.size>0)old.set(x.key,x.size)});folders[k]=folders[k].filter(x=>x.r!==r.id);if(!folders[k].length)delete folders[k]}
+  for(const k in nf){nf[k].forEach(x=>{const s=old.get(x.key);if(s)x.size=s});folders[k]=(folders[k]||[]).concat(nf[k])}
+  render()}catch(e){}}
+ scanning=false;if(denied)sc.textContent='Tap here to allow access to your saved folders';else sc.style.display='none';
+ idb('set','c',cacheable());render()}
 async function addDir(){
  if(window.showDirectoryPicker){try{const h=await showDirectoryPicker({mode:'read'});
-  for(const s of saved)if(await s.isSameEntry(h)){toast('Folder already added');return}
-  saved.push(h);idb('set',saved);await walk(h,h.name);render()}catch(e){}}
+  for(const s of saved)if(await s.h.isSameEntry(h)){toast('Folder already added. Rescanning...');scanAll(true);return}
+  const r={id:uid(),h};saved.push(r);idb('set','d',saved);scanAll(true,[r])}catch(e){}}
  else $('fd').click()}
+function removeDir(){opts('Remove saved folder',saved,null,r=>{saved=saved.filter(x=>x!==r);
+ for(const k of Object.keys(folders)){folders[k]=folders[k].filter(x=>x.r!==r.id);if(!folders[k].length)delete folders[k]}
+ idb('set','d',saved);idb('set','c',cacheable());if(view&&!folders[view])view=null;render();toast('Folder removed')},r=>r.h.name)}
 $('fv').onchange=e=>{[...e.target.files].forEach(f=>addFile(f,'Selected videos'));e.target.value='';render()};
-$('fd').onchange=e=>{[...e.target.files].forEach(f=>{const p=(f.webkitRelativePath||'').split('/');addFile(f,p.length>1?p[p.length-2]:'Selected videos')});e.target.value='';render()};
-$('ad').onclick=()=>sheet('Add videos',(c,close)=>{
- [['Add video files',()=>$('fv').click()],['Add folder',addDir]].forEach(([l,fn])=>{const b=document.createElement('button');b.className='op';b.textContent=l;b.onclick=()=>{close();fn()};c.appendChild(b)})});
-$('bn').onclick=async()=>{try{for(const h of saved)await h.requestPermission({mode:'read'});await scan(saved)}catch(e){toast('Permission denied')}};
-(async()=>{try{const hs=await idb('get');if(hs&&hs.length){saved=hs;let ok=true;for(const h of hs)if(await h.queryPermission({mode:'read'})!='granted')ok=false;
- if(ok)await scan(hs);else $('bn').style.display='block'}}catch(e){}})();
+$('fd').onchange=e=>{for(const f of e.target.files){const p=(f.webkitRelativePath||'').split('/');addFile(f,p.length>1?p.slice(0,-1).join('/'):'Selected videos')}e.target.value='';render()};
+$('rs').onclick=()=>scanAll(true);$('sc').onclick=()=>scanAll(true);
+$('ad').onclick=()=>sheet('Add videos',(c,close)=>{const L=[['Add video files',()=>$('fv').click()],['Add folder',addDir]];if(saved.length)L.push(['Remove a saved folder',removeDir]);
+ L.forEach(([l,fn])=>{const b=document.createElement('button');b.className='op';b.textContent=l;b.onclick=()=>{close();fn()};c.appendChild(b)})});
+(async()=>{try{const sv=await idb('get','d'),ch=await idb('get','c');
+ if(sv)saved=sv.map(x=>x.h?x:{id:uid(),h:x});if(ch)for(const k in ch)folders[k]=ch[k];render();
+ if(saved.length){let ok=true;for(const r of saved)if(await r.h.queryPermission({mode:'read'})!='granted')ok=false;
+  if(ok)scanAll(false);else{$('sc').style.display='block';$('sc').textContent='Tap here to refresh your folders'}}}catch(e){}})();
 
+const meta=v=>(v.size>0?sz(v.size)+' &middot; ':'')+(v.name.includes('.')?v.name.split('.').pop().toUpperCase():'');
+async function fillSizes(dir){const a=folders[dir]||[];for(let i=0;i<a.length;i+=8){if(view!==dir)return;
+ await Promise.all(a.slice(i,i+8).map(async(v,j)=>{if(v.size==null&&v.h){try{v.size=(await v.h.getFile()).size}catch(e){v.size=-1}}
+  const el=$('list').querySelector(`[data-i="${i+j}"] small`);if(el&&view===dir)el.innerHTML=meta(v)}))}}
 function render(){
  const names=Object.keys(folders).sort(nat);let h='';
- $('ttl').textContent=view||'Video Player';$('bk').style.display=view?'':'none';
- if(!view)names.forEach(n=>h+=`<div class="it" data-f="${esc(n)}"><div class="th">&#128193;</div><div class="nm"><b>${esc(n)}</b><small>${folders[n].length} videos</small></div></div>`);
+ $('ttl').textContent=view?last(view):'Video Player';$('bk').style.display=view?'':'none';
+ if(!view)names.forEach(n=>h+=`<div class="it" data-f="${esc(n)}"><div class="th">&#128193;</div><div class="nm"><b>${esc(last(n))}</b><small>${n.includes('/')?esc(n.split('/').slice(0,-1).join('/'))+' &middot; ':''}${folders[n].length} videos</small></div></div>`);
  else if(folders[view])folders[view].sort((a,b)=>nat(a.name,b.name)).forEach((v,i)=>{
   const p=(localStorage.getItem('p:'+v.key)||'').split(','),r=+p[0]/+p[1],bar=r>.01&&r<.97?`<i style="width:${r*100}%"></i>`:'';
-  h+=`<div class="it" data-i="${i}"><div class="th">&#9654;${bar}</div><div class="nm"><b>${esc(v.name)}</b><small>${sz(v.size)}${v.name.includes('.')?' &middot; '+v.name.split('.').pop().toUpperCase():''}</small></div></div>`});
- $('list').innerHTML=h||'<div class="empty">No videos yet.<br>Tap + to add video files or a folder.</div>'}
+  h+=`<div class="it" data-i="${i}"><div class="th">&#9654;${bar}</div><div class="nm"><b>${esc(v.name)}</b><small>${meta(v)}</small></div></div>`});
+ $('list').innerHTML=h||'<div class="empty">No videos yet.<br>Tap + to add video files or a folder.</div>';
+ if(view)fillSizes(view)}
 $('list').onclick=e=>{const r=e.target.closest('.it');if(!r)return;
  if(r.dataset.f!==undefined){view=r.dataset.f;render()}else if(r.dataset.i!==undefined)openVideo(folders[view],+r.dataset.i)};
 $('bk').onclick=()=>{view=null;render()};
@@ -182,11 +208,11 @@ $('eqb').onclick=()=>{showCtrl();initEQ();sheet('Equalizer',c=>{
 /* player */
 let quiet=0,q=[],qi=0,pOpen=false,locked=false,spd=1,asp=0,lastSave=0,drag=false,ct,wl,bri=1;
 const saveP=()=>{if(q[qi]&&V.duration)localStorage.setItem('p:'+q[qi].key,V.currentTime.toFixed(1)+','+V.duration.toFixed(1))};
-function openVideo(arr,i){q=arr;qi=i;spd=S.speed;
+async function openVideo(arr,i){if(opening)return;opening=1;const ok=await getF(arr[i]);opening=0;if(!ok){toast('Cannot open this file. Tap the rescan button.');return}q=arr;qi=i;spd=S.speed;
  if(!pOpen){pOpen=true;history.pushState({p:1},'');$('pl').classList.add('on');
   const f=document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen({navigationUI:'hide'});f&&f.catch&&f.catch(()=>{})}
  if(eq.some(x=>x))initEQ();load()}
-function load(){const f=q[qi];if(V._u)URL.revokeObjectURL(V._u);V._u=URL.createObjectURL(f.file);V.src=V._u;
+async function load(){const f=q[qi],file=await getF(f);if(!file){toast('Cannot open this file');return}if(V._u)URL.revokeObjectURL(V._u);V._u=URL.createObjectURL(file);V.src=V._u;
  V.defaultPlaybackRate=spd;V.playbackRate=spd;$('spb').textContent=spd+'x';$('tt').textContent=f.name;$('sk').value=0;$('tc').textContent='0:00';zs=1;zx=zy=0;applyZ();
  V.play().catch(()=>{});showCtrl()}
 function closeP(){if(!pOpen)return;saveP();pOpen=false;V.pause();V.removeAttribute('src');V.load();if(V._u){URL.revokeObjectURL(V._u);V._u=0}
